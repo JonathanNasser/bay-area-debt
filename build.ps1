@@ -1,4 +1,4 @@
-# Bay Area multifamily CMBS debt pipeline
+﻿# Bay Area multifamily CMBS debt pipeline
 # Sources: SEC EDGAR ABS-EE asset-level files (exh_102.xml), FRED DGS10, Census geocoder.
 # Run: powershell -ExecutionPolicy Bypass -File build.ps1 [-LookbackDays 90]
 #
@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root  = $PSScriptRoot
 $Cache = Join-Path $Root 'cache'
-$Site  = Join-Path $Root 'site'
+$Site  = Join-Path $Root 'docs'
 $Tmp   = Join-Path $Root 'cache\tmp'
 New-Item -ItemType Directory -Force -Path $Cache, $Site, $Tmp | Out-Null
 
