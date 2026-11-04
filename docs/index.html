@@ -47,7 +47,7 @@
 </head>
 <body>
 <header>
-  <h1>Bay Area multifamily CMBS debt</h1>
+  <h1>Bay Area multifamily &amp; retail CMBS debt</h1>
   <div class="meta" id="meta">Loading data…</div>
 </header>
 <nav>
@@ -60,6 +60,7 @@
   <label><input type="checkbox" id="flaggedOnly"> Flagged only</label>
   <label><input type="checkbox" id="ssOnly"> Special servicing / matured / delinquent</label>
   <label>Min refi gap <input type="number" id="minGap" step="0.25" value="0" style="width:72px"> %</label>
+  <label>Type <select id="ptype"><option value="">All</option><option value="MF">Multifamily</option><option value="RT">Retail</option></select></label>
   <label>County <select id="county"><option value="">All</option></select></label>
   <label>Maturity by <input type="month" id="matBefore"></label>
 </div>
@@ -94,7 +95,7 @@
   document.getElementById('meta').textContent =
     `Data as of ${D.generatedAt ? D.generatedAt.slice(0,10) : '—'} · ${loans.length} loans · ${n.flagged || 0} flagged · ` +
     `Benchmark ${b.rate ? fmtPct(b.rate) : '—'} (10-yr UST ${b.ust10yr ? fmtPct(b.ust10yr) : '—'} on ${b.ust10yrDate || '—'} + ${fmtPct(b.spread)}) · ` +
-    `Flag if gap ≥ ${fmtPct(c.spreadThreshold)} or top 10% (gap ≥ ${c.p90Gap != null ? fmtPct(c.p90Gap) : '—'})`;
+    `Flag if gap ≥ ${fmtPct(c.spreadThreshold)} or top 10% of type (multifamily ≥ ${c.p90GapMF != null ? fmtPct(c.p90GapMF) : '—'}, retail ≥ ${c.p90GapRT != null ? fmtPct(c.p90GapRT) : '—'})`;
 
   // ---- columns ----
   const cols = [
@@ -103,7 +104,8 @@
     // (all column renderers receive the full row)
     { k: 'city', h: 'City', t: r => esc(r.city) },
     { k: 'county', h: 'County', t: r => esc(r.county) },
-    { k: 'units', h: 'Units', num: true, t: r => r.units ?? '' },
+    { k: 'propertyType', h: 'Type', t: r => r.propertyType === 'RT' ? 'Retail' : 'Multifamily' },
+    { k: 'units', h: 'Units / SF', num: true, t: r => r.propertyType === 'RT' ? (r.sqft != null ? Number(r.sqft).toLocaleString() + ' SF' : '') : (r.units ?? '') },
     { k: 'balance', h: 'Loan balance', num: true, t: r => fmtMoney(r.balance) },
     { k: 'couponRate', h: 'Coupon', num: true, t: r => fmtPct(r.couponRate) },
     { k: 'refiGap', h: 'Refi gap', num: true, t: r => fmtPct(r.refiGap) },
@@ -131,12 +133,14 @@
     const ssOnly = document.getElementById('ssOnly').checked;
     const minGap = parseFloat(document.getElementById('minGap').value || '0') / 100;
     const cty = countySel.value;
+    const pt = document.getElementById('ptype').value;
     const mat = document.getElementById('matBefore').value; // yyyy-mm
     return loans.filter(r => {
       if (flaggedOnly && !r.flagged) return false;
       if (ssOnly && !r.specialServicing) return false;
       if (r.refiGap < minGap) return false;
       if (cty && r.county !== cty) return false;
+      if (pt && r.propertyType !== pt) return false;
       if (mat && r.maturityDate && r.maturityDate.slice(0,7) > mat) return false;
       if (q) {
         const hay = [r.propertyName, r.address, r.city, r.trust].join(' ').toLowerCase();
@@ -172,7 +176,7 @@
     if (sortKey === col.k) sortDir *= -1; else { sortKey = col.k; sortDir = col.num ? -1 : 1; }
     render();
   });
-  ['search','flaggedOnly','ssOnly','minGap','county','matBefore'].forEach(id =>
+  ['search','flaggedOnly','ssOnly','minGap','ptype','county','matBefore'].forEach(id =>
     document.getElementById(id).addEventListener('input', render));
 
   // ---- map ----
@@ -201,7 +205,7 @@
         <td>${r.flagged ? '<span class="pill flag">Flag</span>' : ''} ${r.specialServicing ? '<span class="pill ss">Distress</span>' : ''}</td>
       </tr>`).join('');
     return `<h3>${esc(first.propertyName || first.address)}</h3>
-      <div class="meta">${esc(first.address)}, ${esc(first.city)} ${esc(first.zip)} · ${esc(first.county)} County · ${first.units ?? '—'} units</div>
+      <div class="meta">${esc(first.address)}, ${esc(first.city)} ${esc(first.zip)} · ${esc(first.county)} County · ${first.propertyType === 'RT' ? (first.sqft != null ? Number(first.sqft).toLocaleString() + ' SF retail' : 'Retail') : (first.units ?? '—') + ' units'}</div>
       <div style="margin:6px 0"><b>Appraised:</b> ${fmtMoney(first.valuation)} · <b>Occ.:</b> ${first.occupancy != null ? fmtNum(first.occupancy,1)+'%' : '—'}</div>
       <table><thead><tr><th>Trust / loan</th><th class="num">Balance</th><th class="num">Coupon</th><th class="num">Gap</th><th>Maturity</th><th class="num">DSCR</th><th></th></tr></thead>
       <tbody>${rows}</tbody></table>

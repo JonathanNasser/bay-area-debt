@@ -147,6 +147,7 @@ foreach ($kv in $trusts.GetEnumerator()) {
             zip             = [string]$bay.propertyZip
             units           = Get-Num $bay.unitsBedsRoomsNumber
             yearBuilt       = Get-Num $bay.yearBuiltNumber
+            sqft            = Get-Num $bay.netRentableSquareFeetNumber
             propertyCount   = $props.Count
             balance         = $bal
             couponRate      = $rate
@@ -163,11 +164,11 @@ foreach ($kv in $trusts.GetEnumerator()) {
 Write-Host "Trusts without asset file: $missing"
 Write-Host "Bay Area loans (all property types, all sizes): $($rows.Count)"
 
-# ---- 5. Criteria: multifamily, loan balance $10M-$400M ----
+# ---- 5. Criteria: multifamily (MF) and retail (RT), loan balance $10M-$400M ----
 # Same loan often appears in several trusts (pari passu notes). Combine them by
 # property + address + maturity + coupon, summing balances, before applying the size band.
-$mfAll = @($rows | Where-Object { $_.propertyType -eq 'MF' })
-$loanGroups = $mfAll | Group-Object { "{0}|{1}|{2}|{3}" -f ($_.propertyName.Trim().ToUpper()), ($_.address.Trim().ToUpper()), $_.maturityDate, ([math]::Round($_.couponRate, 6)) }
+$mfAll = @($rows | Where-Object { $_.propertyType -in @('MF','RT') })
+$loanGroups = $mfAll | Group-Object { "{0}|{1}|{2}|{3}|{4}" -f $_.propertyType, ($_.propertyName.Trim().ToUpper()), ($_.address.Trim().ToUpper()), $_.maturityDate, ([math]::Round($_.couponRate, 6)) }
 $mf = @($loanGroups | ForEach-Object {
     $g = $_.Group
     $first = $g[0]
@@ -179,7 +180,7 @@ $mf = @($loanGroups | ForEach-Object {
     $o | Add-Member -NotePropertyName noteCount -NotePropertyValue $g.Count -Force
     $o
 })
-Write-Host "Multifamily loans after combining notes: $($mfAll.Count) rows -> $($mf.Count) loans within size band"
+Write-Host "MF/RT rows: $($mfAll.Count) -> $(@($mf).Count) loans within size band (MF: $(@($mf | Where-Object propertyType -eq 'MF').Count), RT: $(@($mf | Where-Object propertyType -eq 'RT').Count))"
 
 # ---- 6. Geocode (Census), cached ----
 $geoCachePath = Join-Path $Cache 'geocode.json'
@@ -201,14 +202,18 @@ $geo | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 $geoCachePath
 Write-Host "Geocoded addresses: $(@($geo.Keys | Where-Object { $geo[$_] }).Count) of $($geo.Count)"
 
 # ---- 7. Derived fields and flags ----
-$gaps = @($mf | ForEach-Object { $benchmark - $_.couponRate } | Sort-Object)
-$p90 = $null
-if ($gaps.Count -gt 0) { $p90 = $gaps[[math]::Min([math]::Floor($TopPercentile * ($gaps.Count - 1)), $gaps.Count - 1)] }
+# Top-10% cutoff is computed separately for each property type (MF and RT differ in rate profile)
+$p90ByType = @{}
+foreach ($type in @('MF','RT')) {
+    $gaps = @($mf | Where-Object propertyType -eq $type | ForEach-Object { $benchmark - $_.couponRate } | Sort-Object)
+    if ($gaps.Count -gt 0) { $p90ByType[$type] = $gaps[[math]::Min([math]::Floor($TopPercentile * ($gaps.Count - 1)), $gaps.Count - 1)] }
+}
 
 $out = foreach ($r in $mf) {
     $street = (($r.address -split ' and ')[0] -split ';')[0].Trim()
     $g = $geo["$street|$($r.city)|$($r.zip)"]
     $gap = $benchmark - $r.couponRate
+    $p90 = $p90ByType[$r.propertyType]
     $flagSpread = $gap -ge $SpreadThreshold
     $flagTop    = ($null -ne $p90) -and ($gap -ge $p90)
     # Special-servicing proxy from Reg AB codes (see notes; verify code tables)
@@ -226,7 +231,9 @@ $out = foreach ($r in $mf) {
         city             = $r.city
         county           = $r.county
         zip              = $r.zip
+        propertyType     = $r.propertyType
         units            = $r.units
+        sqft             = $r.sqft
         yearBuilt        = $r.yearBuilt
         propertyCount    = $r.propertyCount
         balance          = $r.balance
@@ -256,7 +263,7 @@ $payload = [pscustomobject]@{
     generatedAt  = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     lookbackDays = $LookbackDays
     benchmark    = [pscustomobject]@{ ust10yr = $ust10; ust10yrDate = $dgsDate; spread = $BenchmarkSpread; rate = $benchmark }
-    criteria     = [pscustomobject]@{ minBalance = $MinBalance; maxBalance = $MaxBalance; spreadThreshold = $SpreadThreshold; topPercentile = $TopPercentile; p90Gap = $p90 }
+    criteria     = [pscustomobject]@{ minBalance = $MinBalance; maxBalance = $MaxBalance; spreadThreshold = $SpreadThreshold; topPercentile = $TopPercentile; p90GapMF = $p90ByType['MF']; p90GapRT = $p90ByType['RT'] }
     counts       = [pscustomobject]@{ trusts = $trusts.Count; bayAreaLoansAllTypes = $rows.Count; mfInBand = $mf.Count; flagged = @($out | Where-Object flagged).Count }
     loans        = @($out)
 }
