@@ -98,8 +98,9 @@
 
   // ---- columns ----
   const cols = [
-    { k: 'flagged', h: 'Flag', t: v => v ? '<span class="pill flag">Flag</span>' : '' , sort: r => r.flagged ? 1 : 0},
+    { k: 'flagged', h: 'Flag', t: r => r.flagged ? '<span class="pill flag">Flag</span>' : '', sort: r => r.flagged ? 1 : 0},
     { k: 'propertyName', h: 'Property', t: r => esc(r.propertyName) },
+    // (all column renderers receive the full row)
     { k: 'city', h: 'City', t: r => esc(r.city) },
     { k: 'county', h: 'County', t: r => esc(r.county) },
     { k: 'units', h: 'Units', num: true, t: r => r.units ?? '' },
@@ -160,7 +161,7 @@
     });
     document.getElementById('rows').innerHTML = rows.length ? rows.map(r =>
       `<tr class="${r.flagged ? 'flagged' : ''}">` + cols.map(col =>
-        `<td class="${col.num ? 'num' : ''}">${col.t(col.k === '_map' ? r : r[col.k])}</td>`).join('') + `</tr>`
+        `<td class="${col.num ? 'num' : ''}">${col.t(r)}</td>`).join('') + `</tr>`
     ).join('') : `<tr><td colspan="${cols.length}" class="empty">No loans match these filters.</td></tr>`;
     if (mapReady) drawMarkers(rows);
   }
