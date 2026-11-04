@@ -1,4 +1,5 @@
 ﻿cache/
 run*.log
 run*.err.log
+/*.html
 
