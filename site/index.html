@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bay Area Multifamily CMBS Debt</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root { --bg:#f6f7f9; --fg:#1d2330; --muted:#667085; --line:#e4e7ec; --card:#ffffff; --accent:#1f5fbf; --flag:#c0392b; --ok:#8a94a6; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg:#101418; --fg:#e6e9ef; --muted:#98a2b3; --line:#2a3139; --card:#171c22; --accent:#6ea8ff; --flag:#ff7b6b; --ok:#667085; }
+  }
+  :root[data-theme="dark"] { --bg:#101418; --fg:#e6e9ef; --muted:#98a2b3; --line:#2a3139; --card:#171c22; --accent:#6ea8ff; --flag:#ff7b6b; --ok:#667085; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:14px 16px 8px; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .meta { color:var(--muted); font-size:12px; }
+  nav { display:flex; gap:8px; padding:0 16px 10px; }
+  nav button { border:1px solid var(--line); background:var(--card); color:var(--fg); padding:6px 14px; border-radius:6px; cursor:pointer; }
+  nav button.active { border-color:var(--accent); color:var(--accent); font-weight:600; }
+  .filters { display:flex; flex-wrap:wrap; gap:10px; align-items:center; padding:0 16px 10px; }
+  .filters input[type=text], .filters select, .filters input[type=number] { padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--fg); }
+  .filters label { color:var(--muted); font-size:12px; }
+  main { padding:0 16px 24px; }
+  .wrap { overflow-x:auto; background:var(--card); border:1px solid var(--line); border-radius:8px; }
+  table { border-collapse:collapse; width:100%; min-width:1100px; }
+  th, td { padding:8px 10px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap; }
+  th { position:sticky; top:0; background:var(--card); cursor:pointer; user-select:none; font-size:12px; color:var(--muted); font-weight:600; }
+  th.sorted::after { content:attr(data-dir); margin-left:4px; color:var(--accent); }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  tr.flagged td:first-child { box-shadow: inset 3px 0 0 var(--flag); }
+  .pill { display:inline-block; padding:1px 7px; border-radius:999px; font-size:11px; border:1px solid var(--line); color:var(--muted); }
+  .pill.flag { border-color:var(--flag); color:var(--flag); }
+  .pill.ss { border-color:var(--accent); color:var(--accent); }
+  button.map-btn { border:1px solid var(--accent); background:transparent; color:var(--accent); border-radius:5px; padding:3px 8px; cursor:pointer; font-size:12px; }
+  #map { height: calc(100vh - 170px); min-height: 480px; border:1px solid var(--line); border-radius:8px; }
+  .hidden { display:none; }
+  .leaflet-popup-content { font-size:13px; line-height:1.4; min-width:260px; }
+  .leaflet-popup-content h3 { margin:0 0 4px; font-size:14px; }
+  .leaflet-popup-content table { min-width:0; font-size:12px; }
+  .leaflet-popup-content th, .leaflet-popup-content td { padding:3px 6px; border:none; white-space:normal; position:static; cursor:default; }
+  .legend { color:var(--muted); font-size:12px; padding:6px 16px; }
+  .empty { padding:24px; color:var(--muted); text-align:center; }
+  @media (max-width: 640px) { header, nav, .filters, main { padding-left:12px; padding-right:12px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Bay Area multifamily CMBS debt</h1>
+  <div class="meta" id="meta">Loading data…</div>
+</header>
+<nav>
+  <button id="tab-table" class="active">Table</button>
+  <button id="tab-map">Map</button>
+</nav>
+
+<div class="filters" id="filters">
+  <input type="text" id="search" placeholder="Search name, address, city, trust" size="30">
+  <label><input type="checkbox" id="flaggedOnly"> Flagged only</label>
+  <label><input type="checkbox" id="ssOnly"> Special servicing / matured / delinquent</label>
+  <label>Min refi gap <input type="number" id="minGap" step="0.25" value="0" style="width:72px"> %</label>
+  <label>County <select id="county"><option value="">All</option></select></label>
+  <label>Maturity by <input type="month" id="matBefore"></label>
+</div>
+
+<main>
+  <div id="view-table">
+    <div class="wrap"><table>
+      <thead><tr id="head"></tr></thead>
+      <tbody id="rows"></tbody>
+    </table></div>
+    <div class="legend">Refi gap = current benchmark (10-yr UST + 225 bps) minus loan coupon. Click a column header to sort. "Map" jumps to the site on the map.</div>
+  </div>
+  <div id="view-map" class="hidden">
+    <div id="map"></div>
+    <div class="legend">Red markers: flagged. Grey: not flagged. Click a marker for loans at that site.</div>
+  </div>
+</main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="data.js"></script>
+<script>
+(function () {
+  const D = window.LOAN_DATA || { loans: [], criteria: {}, benchmark: {}, counts: {} };
+  const loans = D.loans || [];
+  const fmtMoney = v => v == null ? '' : '$' + (v / 1e6).toFixed(1) + 'M';
+  const fmtPct = v => v == null ? '' : (v * 100).toFixed(2) + '%';
+  const fmtNum = (v, d = 2) => v == null || isNaN(v) ? '' : Number(v).toFixed(d);
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+  // ---- meta line ----
+  const b = D.benchmark || {}, c = D.criteria || {}, n = D.counts || {};
+  document.getElementById('meta').textContent =
+    `Data as of ${D.generatedAt ? D.generatedAt.slice(0,10) : '—'} · ${loans.length} loans · ${n.flagged || 0} flagged · ` +
+    `Benchmark ${b.rate ? fmtPct(b.rate) : '—'} (10-yr UST ${b.ust10yr ? fmtPct(b.ust10yr) : '—'} on ${b.ust10yrDate || '—'} + ${fmtPct(b.spread)}) · ` +
+    `Flag if gap ≥ ${fmtPct(c.spreadThreshold)} or top 10% (gap ≥ ${c.p90Gap != null ? fmtPct(c.p90Gap) : '—'})`;
+
+  // ---- columns ----
+  const cols = [
+    { k: 'flagged', h: 'Flag', t: v => v ? '<span class="pill flag">Flag</span>' : '' , sort: r => r.flagged ? 1 : 0},
+    { k: 'propertyName', h: 'Property', t: r => esc(r.propertyName) },
+    { k: 'city', h: 'City', t: r => esc(r.city) },
+    { k: 'county', h: 'County', t: r => esc(r.county) },
+    { k: 'units', h: 'Units', num: true, t: r => r.units ?? '' },
+    { k: 'balance', h: 'Loan balance', num: true, t: r => fmtMoney(r.balance) },
+    { k: 'couponRate', h: 'Coupon', num: true, t: r => fmtPct(r.couponRate) },
+    { k: 'refiGap', h: 'Refi gap', num: true, t: r => fmtPct(r.refiGap) },
+    { k: 'maturityDate', h: 'Maturity', t: r => esc(r.maturityDate) },
+    { k: 'monthsToMaturity', h: 'Months to mat.', num: true, t: r => r.monthsToMaturity ?? '' },
+    { k: 'dscr', h: 'DSCR', num: true, t: r => fmtNum(r.dscr) },
+    { k: 'valuation', h: 'Appraised value', num: true, t: r => fmtMoney(r.valuation) },
+    { k: 'occupancy', h: 'Occ.', num: true, t: r => r.occupancy != null ? fmtNum(r.occupancy, 1) + '%' : '' },
+    { k: 'specialServicing', h: 'Status', t: r => r.specialServicing ? '<span class="pill ss">Distress</span>' : '' },
+    { k: 'trust', h: 'Trust', t: r => esc(r.trust) },
+    { k: '_map', h: 'Map', t: r => r.lat != null ? `<button class="map-btn" data-id="${esc(r.id)}">Map</button>` : '<span class="meta">no geo</span>', noSort: true },
+  ];
+
+  // ---- state ----
+  let sortKey = 'refiGap', sortDir = -1;
+  const head = document.getElementById('head');
+  head.innerHTML = cols.map((col, i) => `<th data-i="${i}" class="${col.num ? 'num' : ''}">${col.h}</th>`).join('');
+  const counties = [...new Set(loans.map(r => r.county).filter(Boolean))].sort();
+  const countySel = document.getElementById('county');
+  counties.forEach(cn => countySel.insertAdjacentHTML('beforeend', `<option value="${esc(cn)}">${esc(cn)}</option>`));
+
+  function filtered() {
+    const q = document.getElementById('search').value.trim().toLowerCase();
+    const flaggedOnly = document.getElementById('flaggedOnly').checked;
+    const ssOnly = document.getElementById('ssOnly').checked;
+    const minGap = parseFloat(document.getElementById('minGap').value || '0') / 100;
+    const cty = countySel.value;
+    const mat = document.getElementById('matBefore').value; // yyyy-mm
+    return loans.filter(r => {
+      if (flaggedOnly && !r.flagged) return false;
+      if (ssOnly && !r.specialServicing) return false;
+      if (r.refiGap < minGap) return false;
+      if (cty && r.county !== cty) return false;
+      if (mat && r.maturityDate && r.maturityDate.slice(0,7) > mat) return false;
+      if (q) {
+        const hay = [r.propertyName, r.address, r.city, r.trust].join(' ').toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    }).sort((a, b) => {
+      const col = cols.find(cl => cl.k === sortKey);
+      const va = col && col.sort ? col.sort(a) : a[sortKey];
+      const vb = col && col.sort ? col.sort(b) : b[sortKey];
+      if (va == null) return 1; if (vb == null) return -1;
+      return (va > vb ? 1 : va < vb ? -1 : 0) * sortDir;
+    });
+  }
+
+  function render() {
+    const rows = filtered();
+    head.querySelectorAll('th').forEach((th, i) => {
+      const col = cols[i];
+      th.classList.toggle('sorted', col.k === sortKey);
+      th.dataset.dir = col.k === sortKey ? (sortDir > 0 ? '▲' : '▼') : '';
+    });
+    document.getElementById('rows').innerHTML = rows.length ? rows.map(r =>
+      `<tr class="${r.flagged ? 'flagged' : ''}">` + cols.map(col =>
+        `<td class="${col.num ? 'num' : ''}">${col.t(col.k === '_map' ? r : r[col.k])}</td>`).join('') + `</tr>`
+    ).join('') : `<tr><td colspan="${cols.length}" class="empty">No loans match these filters.</td></tr>`;
+    if (mapReady) drawMarkers(rows);
+  }
+
+  head.addEventListener('click', e => {
+    const th = e.target.closest('th'); if (!th) return;
+    const col = cols[+th.dataset.i]; if (col.noSort) return;
+    if (sortKey === col.k) sortDir *= -1; else { sortKey = col.k; sortDir = col.num ? -1 : 1; }
+    render();
+  });
+  ['search','flaggedOnly','ssOnly','minGap','county','matBefore'].forEach(id =>
+    document.getElementById(id).addEventListener('input', render));
+
+  // ---- map ----
+  let map, layer, mapReady = false, markerById = {};
+  const siteKey = r => `${r.lat.toFixed(5)},${r.lon.toFixed(5)}`;
+
+  function initMap() {
+    map = L.map('map').setView([37.7, -122.2], 9);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+    layer = L.layerGroup().addTo(map);
+    mapReady = true;
+  }
+
+  function popupHtml(group) {
+    const first = group[0];
+    const rows = group.map(r => `
+      <tr>
+        <td>${esc(r.trust.replace(/ Mortgage Trust/, ''))}<br><span class="meta">loan ${esc(r.loanId)}</span></td>
+        <td class="num">${fmtMoney(r.balance)}</td>
+        <td class="num">${fmtPct(r.couponRate)}</td>
+        <td class="num">${fmtPct(r.refiGap)}</td>
+        <td>${esc(r.maturityDate)}</td>
+        <td class="num">${fmtNum(r.dscr)}</td>
+        <td>${r.flagged ? '<span class="pill flag">Flag</span>' : ''} ${r.specialServicing ? '<span class="pill ss">Distress</span>' : ''}</td>
+      </tr>`).join('');
+    return `<h3>${esc(first.propertyName || first.address)}</h3>
+      <div class="meta">${esc(first.address)}, ${esc(first.city)} ${esc(first.zip)} · ${esc(first.county)} County · ${first.units ?? '—'} units</div>
+      <div style="margin:6px 0"><b>Appraised:</b> ${fmtMoney(first.valuation)} · <b>Occ.:</b> ${first.occupancy != null ? fmtNum(first.occupancy,1)+'%' : '—'}</div>
+      <table><thead><tr><th>Trust / loan</th><th class="num">Balance</th><th class="num">Coupon</th><th class="num">Gap</th><th>Maturity</th><th class="num">DSCR</th><th></th></tr></thead>
+      <tbody>${rows}</tbody></table>
+      <div class="meta" style="margin-top:6px"><a href="${esc(first.secFiling)}" target="_blank" rel="noopener">SEC filing index ↗</a></div>`;
+  }
+
+  function drawMarkers(rows) {
+    layer.clearLayers(); markerById = {};
+    const groups = {};
+    rows.filter(r => r.lat != null && r.lon != null).forEach(r => {
+      (groups[siteKey(r)] = groups[siteKey(r)] || []).push(r);
+    });
+    Object.values(groups).forEach(group => {
+      const anyFlag = group.some(r => r.flagged);
+      const m = L.circleMarker([group[0].lat, group[0].lon], {
+        radius: 7 + Math.min(group.length, 5), color: anyFlag ? getCss('--flag') : getCss('--ok'),
+        fillColor: anyFlag ? getCss('--flag') : getCss('--ok'), fillOpacity: 0.75, weight: 1
+      }).bindPopup(() => popupHtml(group), { maxWidth: 520 });
+      m.addTo(layer);
+      group.forEach(r => markerById[r.id] = m);
+    });
+  }
+
+  function getCss(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim() || '#888'; }
+
+  function showTab(which) {
+    const isMap = which === 'map';
+    document.getElementById('view-table').classList.toggle('hidden', isMap);
+    document.getElementById('view-map').classList.toggle('hidden', !isMap);
+    document.getElementById('tab-table').classList.toggle('active', !isMap);
+    document.getElementById('tab-map').classList.toggle('active', isMap);
+    if (isMap) {
+      if (!map) initMap();
+      setTimeout(() => { map.invalidateSize(); drawMarkers(filtered()); }, 0);
+    }
+  }
+  document.getElementById('tab-table').onclick = () => showTab('table');
+  document.getElementById('tab-map').onclick = () => showTab('map');
+
+  // "Map" button in a table row: switch to map, centre on the site, open its popup
+  document.getElementById('rows').addEventListener('click', e => {
+    const btn = e.target.closest('.map-btn'); if (!btn) return;
+    const r = loans.find(x => x.id === btn.dataset.id); if (!r) return;
+    showTab('map');
+    setTimeout(() => {
+      map.setView([r.lat, r.lon], 14);
+      const m = markerById[r.id];
+      if (m) m.openPopup();
+    }, 120);
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
