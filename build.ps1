@@ -23,7 +23,7 @@ $Curl = Join-Path $env:SystemRoot 'System32\curl.exe'
 
 # ---- Criteria (from user) ----
 $BayAreaCounties = @('Alameda','Contra Costa','Marin','Napa','San Francisco','San Mateo','Santa Clara','Solano','Sonoma')
-$MinBalance      = 10000000
+$MinBalance      = 100000       # changed from $10M to $100K per user request
 $MaxBalance      = 400000000
 $BenchmarkSpread = 0.0225   # current market rate = 10yr UST + 225 bps
 $SpreadThreshold = 0.03     # flag if refi gap >= 3.00%
@@ -70,21 +70,27 @@ Write-Host ("10yr UST {0} = {1:P2}; benchmark = {2:P2}" -f $dgsDate, $ust10, $be
 $end   = (Get-Date).ToString('yyyy-MM-dd')
 $start = (Get-Date).AddDays(-$LookbackDays).ToString('yyyy-MM-dd')
 $filings = @{}
-$from = 0; $total = 1
-do {
-    $url = "https://efts.sec.gov/LATEST/search-index?q=%22Mortgage%20Trust%22&forms=ABS-EE&dateRange=custom&startdt=$start&enddt=$end&from=$from"
-    $r = Get-Text $url | ConvertFrom-Json
-    $total = [int]$r.hits.total.value
-    foreach ($h in $r.hits.hits) {
-        $s = $h._source
-        if (-not $filings.ContainsKey($s.adsh)) {
-            $filings[$s.adsh] = [pscustomobject]@{ adsh = $s.adsh; date = $s.file_date; ciks = @($s.ciks); names = @($s.display_names) }
+# Several name patterns, because CMBS trust names differ (e.g. "BANK 2020-BNK25" and
+# "Morgan Stanley ... Trust" lack the phrase "Mortgage Trust"). Results are unioned by filing.
+$queries = @('%22Mortgage%20Trust%22', '%22Commercial%20Mortgage%22', '%22Morgan%20Stanley%22', 'BANK')
+foreach ($qs in $queries) {
+    $from = 0; $total = 1
+    do {
+        $url = "https://efts.sec.gov/LATEST/search-index?q=$qs&forms=ABS-EE&dateRange=custom&startdt=$start&enddt=$end&from=$from"
+        $r = Get-Text $url | ConvertFrom-Json
+        $total = [int]$r.hits.total.value
+        foreach ($h in $r.hits.hits) {
+            $s = $h._source
+            if (-not $filings.ContainsKey($s.adsh)) {
+                $filings[$s.adsh] = [pscustomobject]@{ adsh = $s.adsh; date = $s.file_date; ciks = @($s.ciks); names = @($s.display_names) }
+            }
         }
-    }
-    $from += 100
-    Start-Sleep -Milliseconds 200
-} while ($from -lt $total)
-Write-Host "ABS-EE filings found: $($filings.Count) (search total reported: $total)"
+        $from += 100
+        Start-Sleep -Milliseconds 200
+    } while ($from -lt $total)
+    Write-Host "  query $qs : total hits $total, filings so far $($filings.Count)"
+}
+Write-Host "ABS-EE filings found: $($filings.Count)"
 
 # ---- 3. Keep the latest filing per trust ----
 $trusts = @{}
